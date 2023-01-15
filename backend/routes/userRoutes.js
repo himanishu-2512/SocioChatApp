@@ -1,0 +1,225 @@
+const express=require("express")
+const User=require("../model/user")
+const fileUpload=require("express-fileupload")
+const Token=require("../model/token")
+var FileReader = require('filereader')
+const sharp =require("sharp")
+const randombytes=require("randombytes");
+const app=express()
+const sendMail=require("../utils/SendEmail")
+app.use(fileUpload({
+  useTempFiles : true,
+    tempFileDir : '/tmp/'
+
+}))
+const cloudinary = require('cloudinary').v2
+cloudinary.config({
+    cloud_name: "dd7rvx59t",
+    api_key: "229916994928983",
+    api_secret: "jgieU6KjN-kTO1pqQU-LOKOos6w"
+  });
+// const {findOne}=require("../model/user")
+const bcrypt=require("bcrypt")
+// const e = require("express")
+// const mongoose=require('mongoose')
+
+const router=express.Router()
+//register
+router.post("/register",async (req,res)=>{
+    try {
+        const { name,username, email, password } = req.body;
+        const usernameCheck = await User.findOne({ username });
+        if (usernameCheck)
+          return res.json({ msg: "Username already used", status: false });
+        const emailCheck = await User.findOne({ email });
+        if (emailCheck)
+          return res.json({ msg: "Email already used", status: false });
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const user = await User.create({
+            name,
+          email,
+          username,
+          password: hashedPassword,
+        });
+        const token= await Token.create({
+          userId:user._id,
+          token:randombytes(24).toString("hex"),
+        });
+        const url = `${process.env.BASE_URL}/users/${user.id}/verify/${token.token}`;
+await sendMail(user.email,"Verify Email for Socio",`Link will be valid only for  1 hour ${url}`)
+        // delete user.password;
+        return res.json({ status: true, user });
+      } catch (ex) {
+        console.log(ex)
+      }
+    })
+//verification
+    router.post("/user/:id/verify/:token",async(req,res)=>{
+      try {
+        const userId=req.params.id
+        const token=req.params.token
+        console.log(userId)
+        const usertoken=await Token.findOne({
+          userId,
+          token,
+        })
+        console.log(usertoken)
+        if(!usertoken){
+          res.json({message:"wrong url",status:false})
+console.log("error")
+        }
+        const update=await User.findByIdAndUpdate(usertoken.userId,{
+          isVerified:true,
+        },{new:true})
+        res.json({message:"sucessful",status:true,update})
+        console.log("verified sucessfully",update)
+
+      } catch (error) {
+        console.log("internal error",error)
+      }
+    })
+    //login
+router.post("/login",async(req,res)=>{
+    try {
+        const {emailusername,password}=req.body;
+        const emailCheck=await User.findOne({email:emailusername });
+        const userCheck=await User.findOne({ username:emailusername });
+        if(emailCheck){
+            
+            console.log(emailCheck)
+            const passwordCheck=await bcrypt.compare(password,emailCheck.password)
+            if(!passwordCheck){
+            return res.json({message:"password is wrong" ,status:false})}
+            if(emailCheck.isVerified===false){
+              const token= await Token.create({
+                userId:emailCheck._id,
+                token:randombytes(24).toString("hex"),
+              });
+              const url = `${process.env.BASE_URL}/users/${emailCheck.id}/verify/${token.token}`;
+      await sendMail(emailCheck.email,"Verify Email for Socio",`Link will be valid only for  1 hour ${url}`)
+      return res.json({message:" Verification email has been sent to your registered email",status:false})
+            }
+            return res.json({message:"login sucessful",status:true,user:emailCheck
+            })
+
+        }
+        else if(userCheck){
+            console.log()
+            const passwordCheck= await bcrypt.compare(password,userCheck.password)
+            if(!passwordCheck){
+            return res.json({message:"password is wrong" ,status:false})}
+            if(userCheck.isVerified===false){
+              console.log(userCheck)
+              const token= await Token.create({
+                userId:userCheck._id,
+                token:randombytes(24).toString("hex"),
+              });
+              const url = `${process.env.BASE_URL}/users/${emailCheck.id}/verify/${token.token}`;
+      await sendMail(emailCheck.email,"Verify Email for Socio",`Link will be valid only for  1 hour ${url}`)
+      return res.json({message:" Verification email has been sent to your registered email",status:false})
+            }
+            return res.json({message:"login sucessful", status:true,user:userCheck})
+            
+        }
+        else{
+            res.json({message:"username or email is wrong !!",status:false})
+        }
+
+    } catch (error) {
+        console.log(error)
+    }
+})
+//setavatar autogenerated
+router.post("/setcharacter/:id",async(req,res)=>{
+  try {
+    const id=req.params.id;
+    const {avatarUrl}=req.body;
+    console.log(avatarUrl,id)
+    const user=await User.findByIdAndUpdate(id,{avatarUrl:avatarUrl,isAvatar:true},{new:true})
+    console.log(user)
+   res.json({message:"sucessfully image set",status:true})
+}
+
+catch(error){
+  console.log(error)
+res.json({message:"failed to set image try again",status:false})
+}})
+//setavatar custom
+router.post("/setavatar/:id",async(req,res)=>{
+  try {
+    
+    const id=req.params.id
+    const image=req.files;
+    console.log(id,image.image)
+    const resizedImage=await sharp(image.image.tempFilePath).resize({width:200,height:200}).png({quality:30}).toFile("output.png")
+    console.log(resizedImage)
+    const url=await cloudinary.uploader.upload("./output.png",{folder:"project"})
+    console.log(url)
+    
+    const user=await User.findByIdAndUpdate(id,{avatarUrl:url.secure_url,isAvatar:true},{new:true})
+    
+    
+ 
+    res.json({message:"image uploaded sucessfully",status:true,avatarUrl:url.secure_url})
+   
+
+  } catch (error) {
+    console.log(error)
+    res.json({message:"reupload the image",status:false})
+  }
+  
+})
+//forgot password url generator
+router.post("/forgotpassword",async(req,res)=>{
+  try {
+    const emailuser=req.body.email||req.body.username
+const user =await User.findOne({email:emailuser})||await User.findOne({username:emailuser})
+const token= await Token.create({
+  userId:user._id,
+  token:randombytes(24).toString("hex"),
+
+});
+const url = `${process.env.BASE_URL}/users/${user._id}/forgotpassword/${token.token}`;
+await sendMail(user.email,"Forgot Pasword for Socio",`Link will be valid only for  1 hour ${url}`)
+res.json({message:"URL to change password has been sent to your registered email",status:true})
+
+
+
+  } catch (error) {
+console.log(error)
+    res.json({message:"Internal server error",status:false})
+  }
+})
+//forgot password verification link
+router.post("/users/:id/forgotpassword/:token",async(req,res)=>{
+  try {
+    const id=req.params.id
+    const token=req.params.token
+    const password=req.body.password
+    const tokenverify=await Token.findOne({
+      token:token,
+      user:id,
+    })
+    if(!tokenverify){
+      res.json({message:"Wrong link or Link erxpired",status:true})
+    }
+
+const hashedpassword=await bcrypt.hash(password,10)    
+    const user=await User.findByIdAndUpdate(id,{
+      password:hashedpassword,
+    },{new:true})
+    res.json({message:"new password set sucessfully",status:true,user})
+
+
+  } catch (error) {
+    console.log(error)
+    res.json({message:"internal server error",status:false})
+  }
+
+})
+
+
+
+
+
+module.exports=router
